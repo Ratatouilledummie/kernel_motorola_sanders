@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2016, 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -86,7 +86,12 @@ static struct sk_buff_head *msm_ipc_router_build_msg(unsigned int num_sect,
 			if (last)
 				request_size += align_size;
 
-			msg = alloc_skb(request_size, GFP_KERNEL);
+			if ((SKB_DATA_ALIGN(request_size) + SKB_DATA_ALIGN(
+				sizeof(struct skb_shared_info))) < PAGE_SIZE)
+				msg = alloc_skb(request_size, GFP_KERNEL);
+			else
+				msg = alloc_skb(request_size, GFP_KERNEL |
+					__GFP_NOWARN | __GFP_NORETRY);
 			if (!msg) {
 				if (request_size <= (PAGE_SIZE/2)) {
 					IPC_RTR_ERR(
@@ -155,7 +160,6 @@ static int msm_ipc_router_extract_msg(struct msghdr *m,
 			return -EINVAL;
 		}
 		ctl_msg = (union rr_control_msg *)(temp->data);
-		memset(addr, 0x0, sizeof(*addr));
 		addr->family = AF_MSM_IPC;
 		addr->address.addrtype = MSM_IPC_ADDR_ID;
 		addr->address.addr.port_addr.node_id = ctl_msg->cli.node_id;
@@ -164,7 +168,6 @@ static int msm_ipc_router_extract_msg(struct msghdr *m,
 		return offset;
 	}
 	if (addr && (hdr->type == IPC_ROUTER_CTRL_CMD_DATA)) {
-		memset(addr, 0x0, sizeof(*addr));
 		addr->family = AF_MSM_IPC;
 		addr->address.addrtype = MSM_IPC_ADDR_ID;
 		addr->address.addr.port_addr.node_id = hdr->src_node_id;

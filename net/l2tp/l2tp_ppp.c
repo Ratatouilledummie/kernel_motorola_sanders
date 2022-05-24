@@ -608,13 +608,6 @@ static int pppol2tp_connect(struct socket *sock, struct sockaddr *uservaddr,
 	lock_sock(sk);
 
 	error = -EINVAL;
-
-	if (sockaddr_len != sizeof(struct sockaddr_pppol2tp) &&
-	    sockaddr_len != sizeof(struct sockaddr_pppol2tpv3) &&
-	    sockaddr_len != sizeof(struct sockaddr_pppol2tpin6) &&
-	    sockaddr_len != sizeof(struct sockaddr_pppol2tpv3in6))
-		goto end;
-
 	if (sp->sa_protocol != PX_PROTO_OL2TP)
 		goto end;
 
@@ -811,20 +804,25 @@ end:
 
 #ifdef CONFIG_L2TP_V3
 
-/* Called when creating sessions via the netlink interface. */
-static int pppol2tp_session_create(struct net *net, struct l2tp_tunnel *tunnel,
-				   u32 session_id, u32 peer_session_id,
-				   struct l2tp_session_cfg *cfg)
+/* Called when creating sessions via the netlink interface.
+ */
+static int pppol2tp_session_create(struct net *net, u32 tunnel_id, u32 session_id, u32 peer_session_id, struct l2tp_session_cfg *cfg)
 {
 	int error;
+	struct l2tp_tunnel *tunnel;
 	struct l2tp_session *session;
 	struct pppol2tp_session *ps;
 
-	/* Error if tunnel socket is not prepped */
-	if (!tunnel->sock) {
-		error = -ENOENT;
+	tunnel = l2tp_tunnel_find(net, tunnel_id);
+
+	/* Error if we can't find the tunnel */
+	error = -ENOENT;
+	if (tunnel == NULL)
 		goto out;
-	}
+
+	/* Error if tunnel socket is not prepped */
+	if (tunnel->sock == NULL)
+		goto out;
 
 	/* Check that this session doesn't already exist */
 	error = -EEXIST;
@@ -1019,9 +1017,6 @@ static int pppol2tp_session_ioctl(struct l2tp_session *session,
 		 session->name, cmd, arg);
 
 	sk = ps->sock;
-	if (!sk)
-		return -EBADR;
-
 	sock_hold(sk);
 
 	switch (cmd) {
