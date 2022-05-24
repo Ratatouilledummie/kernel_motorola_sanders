@@ -108,7 +108,6 @@
 #define DWC3_GPRTBIMAP_HS1	0xc184
 #define DWC3_GPRTBIMAP_FS0	0xc188
 #define DWC3_GPRTBIMAP_FS1	0xc18c
-#define DWC3_GUCTL2		0xc19c
 
 #define DWC3_GUSB2PHYCFG(n)	(0xc200 + (n * 0x04))
 #define DWC3_GUSB2I2CCTL(n)	(0xc240 + (n * 0x04))
@@ -194,9 +193,6 @@
 
 /* Global Debug LTSSM Register */
 #define DWC3_GDBGLTSSM_LINKSTATE_MASK	(0xF << 22)
-
-/* Global User Control 2 Register */
-#define DWC3_GUCTL2_ENABLE_EP_CACHE_EVICT	(1 << 12)
 
 /* Global USB2 PHY Configuration Register */
 #define DWC3_GUSB2PHYCFG_PHYSOFTRST	(1 << 31)
@@ -452,9 +448,6 @@ enum event_buf_type {
 	EVT_BUF_TYPE_NORMAL,
 	EVT_BUF_TYPE_GSI
 };
-
-#define DWC_CTRL_COUNT	10
-#define NUM_LOG_PAGES	12
 
 /**
  * struct dwc3_event_buffer - Software event buffer representation
@@ -833,12 +826,12 @@ struct dwc3_scratchpad_array {
  * @irq: irq number
  * @bh: tasklet which handles the interrupt
  * @irq_cnt: total irq count
+ * @err_cnt: total error count
  * @bh_completion_time: time taken for taklet completion
  * @bh_handled_evt_cnt: no. of events handled by tasklet per interrupt
  * @bh_dbg_index: index for capturing bh_completion_time and bh_handled_evt_cnt
  * @wait_linkstate: waitqueue for waiting LINK to move into required state
  * @vbus_draw: current to be drawn from USB
- * @dwc_ipc_log_ctxt: dwc3 ipa log context
  * @last_fifo_depth: total TXFIFO depth of all enabled USB IN/INT endpoints
  */
 struct dwc3 {
@@ -913,9 +906,6 @@ struct dwc3 {
 #define DWC3_REVISION_260A	0x5533260a
 #define DWC3_REVISION_270A	0x5533270a
 #define DWC3_REVISION_280A	0x5533280a
-#define DWC3_REVISION_300A	0x5533300a
-#define DWC3_REVISION_310A	0x5533310a
-#define DWC3_REVISION_320A	0x5533320a
 
 	enum dwc3_ep0_next	ep0_next_event;
 	enum dwc3_ep0_state	ep0state;
@@ -983,6 +973,7 @@ struct dwc3 {
 	int			irq;
 	unsigned long		irq_cnt;
 	unsigned long		ep_cmd_timeout_cnt;
+	unsigned long		err_cnt;
 	unsigned                bh_completion_time[MAX_INTR_STATS];
 	unsigned                bh_handled_evt_cnt[MAX_INTR_STATS];
 	unsigned                bh_dbg_index;
@@ -995,8 +986,10 @@ struct dwc3 {
 	unsigned long		l1_remote_wakeup_cnt;
 
 	wait_queue_head_t	wait_linkstate;
-	void			*dwc_ipc_log_ctxt;
 	int			last_fifo_depth;
+	u8			ctrl_num;
+	unsigned		xhci_limit_arbitrary_sg:1;
+	unsigned		xhci_panic_on_wdog:1;
 };
 
 /* -------------------------------------------------------------------------- */
