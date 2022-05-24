@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -29,8 +29,7 @@
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/qpnp/power-on.h>
-#include <linux/qpnp/qpnp-pbs.h>
-#include <linux/qpnp-misc.h>
+#include <linux/time.h>
 
 #define CREATE_MASK(NUM_BITS, POS) \
 	((unsigned char) (((1 << (NUM_BITS)) - 1) << (POS)))
@@ -99,6 +98,10 @@
 #define QPNP_PON_SEC_ACCESS(pon)		((pon)->base + 0xD0)
 
 #define QPNP_PON_SEC_UNLOCK			0xA5
+
+/* spared registers for storing extra reset information */
+#define QPNP_PON_EXTRA_RESET_INFO_1(base)	(base + 0x8D)
+#define QPNP_PON_EXTRA_RESET_INFO_2(base)	(base + 0x8E)
 
 #define QPNP_PON_WARM_RESET_TFT			BIT(4)
 
@@ -209,7 +212,6 @@ struct qpnp_pon {
 	struct list_head	list;
 	struct delayed_work	bark_work;
 	struct dentry		*debugfs;
-	struct device_node	*pbs_dev_node;
 	int			pon_trigger_reason;
 	int			pon_power_off_reason;
 	int			num_pon_reg;
@@ -225,16 +227,16 @@ struct qpnp_pon {
 	u8			pon_ver;
 	u8			warm_reset_reason1;
 	u8			warm_reset_reason2;
-	u8			twm_state;
 	bool			is_spon;
 	bool			store_hard_reset_reason;
 	bool			kpdpwr_dbc_enable;
-	bool			support_twm_config;
 	ktime_t			kpdpwr_last_release_time;
-	struct notifier_block	pon_nb;
 };
 
+int qpnp_pon_key_status = 0;
+
 static struct qpnp_pon *sys_reset_dev;
+static struct qpnp_pon *shipmode_dev;
 static DEFINE_SPINLOCK(spon_list_slock);
 static LIST_HEAD(spon_dev_list);
 
@@ -494,53 +496,114 @@ static ssize_t qpnp_pon_dbc_store(struct device *dev,
 	return size;
 }
 
-static struct qpnp_pon_config *
-qpnp_get_cfg(struct qpnp_pon *pon, u32 pon_type)
-{
-	int i;
-
-	for (i = 0; i < pon->num_pon_config; i++) {
-		if (pon_type == pon->pon_cfg[i].pon_type)
-			return  &pon->pon_cfg[i];
-	}
-
-	return NULL;
-}
-
 static DEVICE_ATTR(debounce_us, 0664, qpnp_pon_dbc_show, qpnp_pon_dbc_store);
 
-#define PON_TWM_ENTRY_PBS_BIT		BIT(0)
+int qpnp_pon_store_extra_reset_info(u16 mask, u16 val)
+{
+	int rc = 0;
+	u16 extra_reset_info_reg;
+	struct qpnp_pon *pon = sys_reset_dev;
+
+	if (!pon)
+		return -ENODEV;
+
+	if (mask & 0xFF) {
+		extra_reset_info_reg = QPNP_PON_EXTRA_RESET_INFO_1(pon->base);
+		rc = qpnp_pon_masked_write(pon, extra_reset_info_reg,
+		    mask & 0xFF, val & 0xFF);
+		if (rc) {
+			pr_err("Failed to store extra reset info to 0x%x\n",
+			    extra_reset_info_reg);
+			return rc;
+		}
+	}
+
+	if (mask & 0xFF00) {
+		extra_reset_info_reg = QPNP_PON_EXTRA_RESET_INFO_2(pon->base);
+		rc = qpnp_pon_masked_write(pon, extra_reset_info_reg,
+		    (mask & 0xFF00) >> 8, (val & 0xFF00) >> 8);
+		if (rc) {
+			pr_err("Failed to store extra reset info to 0x%x\n",
+			    extra_reset_info_reg);
+			return rc;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(qpnp_pon_store_extra_reset_info);
+
+int qpnp_pon_store_shipmode_info(u16 mask, u16 val)
+{
+	int rc = 0;
+	u16 shipmode_info_reg;
+	u8 value;
+	struct qpnp_pon *pon = shipmode_dev;
+
+	if (!pon)
+		return -ENODEV;
+
+	if (mask & 0xFF) {
+
+		shipmode_info_reg = QPNP_PON_EXTRA_RESET_INFO_2(pon->base);
+
+		rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
+					     shipmode_info_reg, &value, 1);
+		if (rc) {
+			dev_err(&pon->spmi->dev,
+				"Unable to check shipmode status, rc(%d)\n",
+				rc);
+		}
+		pr_err("Current shipmode info is 0x%x = 0x%x\n",
+		       shipmode_info_reg, value);
+
+		rc = qpnp_pon_masked_write(pon, shipmode_info_reg,
+		    mask & 0xFF, val & 0xFF);
+		if (rc) {
+			pr_err("Failed to store shipmode info to 0x%x\n",
+			    shipmode_info_reg);
+			return rc;
+		}
+		pr_err("Write shipmode info to 0x%x with 0x%x\n",
+		       shipmode_info_reg, val);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(qpnp_pon_store_shipmode_info);
+
+bool qpnp_pon_check_shipmode_info(void)
+{
+	int rc = 0;
+	u16 shipmode_info_reg;
+	u8 value;
+	struct qpnp_pon *pon = shipmode_dev;
+
+	if (!pon)
+		return false;
+
+	shipmode_info_reg = QPNP_PON_EXTRA_RESET_INFO_2(pon->base);
+
+	rc = spmi_ext_register_readl(pon->spmi->ctrl, pon->spmi->sid,
+				     shipmode_info_reg, &value, 1);
+	if (rc) {
+		dev_err(&pon->spmi->dev,
+			"Unable to check shipmode status, rc(%d)\n",
+			rc);
+		return false;
+	}
+	pr_info("Current shipmode info is 0x%x = 0x%x\n",
+	       shipmode_info_reg, value);
+
+	return ((value & RESET_SHIPMODE_INFO_SHPMOD_REASON) != 0);
+}
+EXPORT_SYMBOL(qpnp_pon_check_shipmode_info);
+
 static int qpnp_pon_reset_config(struct qpnp_pon *pon,
 		enum pon_power_off_type type)
 {
 	int rc;
 	u16 rst_en_reg;
-	struct qpnp_pon_config *cfg;
-
-	/* Ignore the PS_HOLD reset config if TWM ENTRY is enabled */
-	if (pon->support_twm_config && pon->twm_state == PMIC_TWM_ENABLE) {
-		rc = qpnp_pbs_trigger_event(pon->pbs_dev_node,
-					PON_TWM_ENTRY_PBS_BIT);
-		if (rc < 0) {
-			pr_err("Unable to trigger PBS trigger for TWM entry rc=%d\n",
-							rc);
-			return rc;
-		}
-
-		cfg = qpnp_get_cfg(pon, PON_KPDPWR);
-		if (cfg) {
-			/* configure KPDPWR_S2 to Hard reset */
-			rc = qpnp_pon_masked_write(pon, cfg->s2_cntl_addr,
-						QPNP_PON_S2_CNTL_TYPE_MASK,
-						PON_POWER_OFF_HARD_RESET);
-			if (rc < 0)
-				pr_err("Unable to config KPDPWR_N S2 for hard-reset rc=%d\n",
-					rc);
-		}
-
-		pr_crit("PMIC configured for TWM entry\n");
-		return 0;
-	}
 
 	if (pon->pon_ver == QPNP_PON_GEN1_V1)
 		rst_en_reg = QPNP_PON_PS_HOLD_RST_CTL(pon);
@@ -822,6 +885,19 @@ static int qpnp_pon_store_and_clear_warm_reset(struct qpnp_pon *pon)
 	return 0;
 }
 
+static struct qpnp_pon_config *
+qpnp_get_cfg(struct qpnp_pon *pon, u32 pon_type)
+{
+	int i;
+
+	for (i = 0; i < pon->num_pon_config; i++) {
+		if (pon_type == pon->pon_cfg[i].pon_type)
+			return  &pon->pon_cfg[i];
+	}
+
+	return NULL;
+}
+
 static int
 qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 {
@@ -830,6 +906,9 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	u8 pon_rt_sts = 0, pon_rt_bit = 0;
 	u32 key_status;
 	u64 elapsed_us;
+	struct timeval timestamp;
+	struct tm tm;
+	char buff[255];
 
 	cfg = qpnp_get_cfg(pon, pon_type);
 	if (!cfg)
@@ -859,9 +938,21 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 		return rc;
 	}
 
+	qpnp_pon_key_status = pon_rt_sts;
+
 	switch (cfg->pon_type) {
 	case PON_KPDPWR:
 		pon_rt_bit = QPNP_PON_KPDPWR_N_SET;
+		/* get the time stamp in readable format to print*/
+		do_gettimeofday(&timestamp);
+		time_to_tm((time_t)(timestamp.tv_sec), 0, &tm);
+		snprintf(buff, sizeof(buff),
+			"%u-%02d-%02d %02d:%02d:%02d UTC",
+			(int) tm.tm_year + 1900, tm.tm_mon + 1,
+			tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+		pr_info("Report pwrkey %s event at: %s\n", pon_rt_bit &
+			pon_rt_sts ? "press" : "release", buff);
 		break;
 	case PON_RESIN:
 		pon_rt_bit = QPNP_PON_RESIN_N_SET;
@@ -2017,42 +2108,13 @@ static int read_gen2_pon_off_reason(struct qpnp_pon *pon, u16 *reason,
 	return 0;
 }
 
-static int pon_twm_notifier_cb(struct notifier_block *nb,
-				unsigned long action, void *data)
-{
-	struct qpnp_pon *pon = container_of(nb, struct qpnp_pon, pon_nb);
-
-	if (action != PMIC_TWM_CLEAR &&
-			action != PMIC_TWM_ENABLE) {
-		pr_debug("Unsupported option %lu\n", action);
-		return NOTIFY_OK;
-	}
-
-	pon->twm_state = (u8)action;
-	pr_debug("TWM state = %d\n", pon->twm_state);
-
-	return NOTIFY_OK;
-}
-
-static int pon_register_twm_notifier(struct qpnp_pon *pon)
-{
-	int rc;
-
-	pon->pon_nb.notifier_call = pon_twm_notifier_cb;
-	rc = qpnp_misc_twm_notifier_register(&pon->pon_nb);
-	if (rc < 0)
-		pr_err("Failed to register pon_twm_notifier_cb rc=%d\n", rc);
-
-	return rc;
-}
-
 static int qpnp_pon_probe(struct spmi_device *spmi)
 {
 	struct qpnp_pon *pon;
 	struct resource *pon_resource;
 	struct device_node *node = NULL;
 	u32 delay = 0, s3_debounce = 0;
-	int rc, sys_reset, index;
+	int rc, sys_reset, index, shipmode;
 	int reason_index_offset = 0;
 	u8 pon_sts = 0, buf[2];
 	u16 poff_sts = 0;
@@ -2074,6 +2136,15 @@ static int qpnp_pon_probe(struct spmi_device *spmi)
 		return -EINVAL;
 	} else if (sys_reset) {
 		sys_reset_dev = pon;
+	}
+
+	shipmode = of_property_read_bool(spmi->dev.of_node,
+						"qcom,shipmode");
+	if (shipmode && shipmode_dev) {
+		dev_err(&spmi->dev, "qcom,shipmode property can only be specified for one device on the system\n");
+		return -EINVAL;
+	} else if (shipmode) {
+		shipmode_dev = pon;
 	}
 
 	pon->spmi = spmi;
@@ -2301,22 +2372,6 @@ static int qpnp_pon_probe(struct spmi_device *spmi)
 		dev_err(&spmi->dev,
 			"Unable to initialize PON configurations rc: %d\n", rc);
 		return rc;
-	}
-
-	if (of_property_read_bool(pon->spmi->dev.of_node,
-					"qcom,support-twm-config")) {
-		pon->support_twm_config = true;
-		rc = pon_register_twm_notifier(pon);
-		if (rc < 0) {
-			pr_err("Failed to register TWM notifier rc=%d\n", rc);
-			return rc;
-		}
-		pon->pbs_dev_node = of_parse_phandle(pon->spmi->dev.of_node,
-						"qcom,pbs-client", 0);
-		if (!pon->pbs_dev_node) {
-			pr_err("Missing qcom,pbs-client property\n");
-			return -EINVAL;
-		}
 	}
 
 	rc = of_property_read_u32(pon->spmi->dev.of_node,

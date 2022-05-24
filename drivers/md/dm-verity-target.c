@@ -33,7 +33,7 @@
 #define DM_VERITY_OPT_LOGGING		"ignore_corruption"
 #define DM_VERITY_OPT_RESTART		"restart_on_corruption"
 #define DM_VERITY_OPT_IGN_ZEROES	"ignore_zero_blocks"
-#define DM_VERITY_OPT_AT_MOST_ONCE	"check_at_most_once"
+#define DM_VERITY_CACHE_CLEAR_SECS	43200 /* 12 hours in seconds */
 
 #define DM_VERITY_OPTS_MAX		(2 + DM_VERITY_OPTS_FEC)
 
@@ -63,6 +63,51 @@ struct dm_verity_prefetch_work {
 struct buffer_aux {
 	int hash_verified;
 };
+
+/*
+ * The recently verified block cache timer has expired. Clear the cache.
+ */
+static void cache_timeout_cb(unsigned long data)
+{
+	struct dm_verity *v = (struct dm_verity *)data;
+
+	bitmap_zero(v->verified_cache, v->data_blocks);
+	mod_timer(&v->cache_timeout, jiffies + DM_VERITY_CACHE_CLEAR_SECS * HZ);
+}
+
+/*
+ * Determine if an entire bio structure has been recently verified. Return 1
+ * if so, and 0 if not.
+ */
+static int recently_verified(struct dm_verity *v, sector_t block,
+			     unsigned n_blocks)
+{
+	unsigned b;
+
+	if (!v->verified_cache)
+		return 0;
+
+	for (b = 0; b < n_blocks; b++) {
+		if (!test_bit(block + b, v->verified_cache))
+			return 0;
+	}
+
+	return 1;
+}
+
+/*
+ * Add a block to the recently verified block cache to avoid verifying it
+ * multiple times within the cache expiration period.
+ */
+static void add_to_verified_cache(struct dm_verity_io *io, unsigned b)
+{
+	struct dm_verity *v = io->v;
+
+	if (!v->verified_cache)
+		return;
+
+	set_bit(io->block + b, v->verified_cache);
+}
 
 /*
  * Initialize struct buffer_aux for a freshly created buffer.
@@ -397,18 +442,6 @@ static int verity_bv_zero(struct dm_verity *v, struct dm_verity_io *io,
 }
 
 /*
- * Moves the bio iter one data block forward.
- */
-static inline void verity_bv_skip_block(struct dm_verity *v,
-					struct dm_verity_io *io,
-					struct bvec_iter *iter)
-{
-	struct bio *bio = dm_bio_from_per_bio_data(io, v->ti->per_bio_data_size);
-
-	bio_advance_iter(bio, iter, 1 << v->data_dev_block_bits);
-}
-
-/*
  * Verify one "dm_verity_io" structure.
  */
 static int verity_verify_io(struct dm_verity_io *io)
@@ -420,16 +453,9 @@ static int verity_verify_io(struct dm_verity_io *io)
 
 	for (b = 0; b < io->n_blocks; b++) {
 		int r;
-		sector_t cur_block = io->block + b;
 		struct shash_desc *desc = verity_io_hash_desc(v, io);
 
-		if (v->validated_blocks &&
-		    likely(test_bit(cur_block, v->validated_blocks))) {
-			verity_bv_skip_block(v, io, &io->iter);
-			continue;
-		}
-
-		r = verity_hash_for_block(v, io, cur_block,
+		r = verity_hash_for_block(v, io, io->block + b,
 					  verity_io_want_digest(v, io),
 					  &is_zero);
 		if (unlikely(r < 0))
@@ -462,16 +488,13 @@ static int verity_verify_io(struct dm_verity_io *io)
 			return r;
 
 		if (likely(memcmp(verity_io_real_digest(v, io),
-				  verity_io_want_digest(v, io), v->digest_size) == 0)) {
-			if (v->validated_blocks)
-				set_bit(cur_block, v->validated_blocks);
-			continue;
-		}
+				  verity_io_want_digest(v, io), v->digest_size) == 0))
+			add_to_verified_cache(io, b);
 		else if (verity_fec_decode(v, io, DM_VERITY_BLOCK_TYPE_DATA,
-					   cur_block, NULL, &start) == 0)
+					   io->block + b, NULL, &start) == 0)
 			continue;
 		else if (verity_handle_err(v, DM_VERITY_BLOCK_TYPE_DATA,
-					   cur_block))
+					   io->block + b))
 			return -EIO;
 	}
 
@@ -586,6 +609,8 @@ int verity_map(struct dm_target *ti, struct bio *bio)
 {
 	struct dm_verity *v = ti->private;
 	struct dm_verity_io *io;
+	sector_t block;
+	unsigned n_blocks;
 
 	bio->bi_bdev = v->data_dev->bdev;
 	bio->bi_iter.bi_sector = verity_map_sector(v, bio->bi_iter.bi_sector);
@@ -605,12 +630,26 @@ int verity_map(struct dm_target *ti, struct bio *bio)
 	if (bio_data_dir(bio) == WRITE)
 		return -EIO;
 
+	/*
+	 * Determine if this bio request has been recently verified using an
+	 * all or nothing approach. If 0 is returned, not all of the blocks
+	 * were recently verified, so we'll verify all blocks. If 1 is returned
+	 * all blocks were recently verified and we'll skip routing the bio
+	 * request back to dm-verity for verification and skip the hash
+	 * prefetch.
+	 */
+	block = bio->bi_iter.bi_sector >>
+		(v->data_dev_block_bits - SECTOR_SHIFT);
+	n_blocks = bio->bi_iter.bi_size >> v->data_dev_block_bits;
+	if (recently_verified(v, block, n_blocks))
+		goto already_verified;
+
 	io = dm_per_bio_data(bio, ti->per_bio_data_size);
 	io->v = v;
 	io->orig_bi_end_io = bio->bi_end_io;
 	io->orig_bi_private = bio->bi_private;
-	io->block = bio->bi_iter.bi_sector >> (v->data_dev_block_bits - SECTOR_SHIFT);
-	io->n_blocks = bio->bi_iter.bi_size >> v->data_dev_block_bits;
+	io->block = block;
+	io->n_blocks = n_blocks;
 
 	bio->bi_end_io = verity_end_io;
 	bio->bi_private = io;
@@ -620,6 +659,7 @@ int verity_map(struct dm_target *ti, struct bio *bio)
 
 	verity_submit_prefetch(v, io);
 
+already_verified:
 	generic_make_request(bio);
 
 	return DM_MAPIO_SUBMITTED;
@@ -666,8 +706,6 @@ void verity_status(struct dm_target *ti, status_type_t type,
 			args += DM_VERITY_OPTS_FEC;
 		if (v->zero_digest)
 			args++;
-		if (v->validated_blocks)
-			args++;
 		if (!args)
 			return;
 		DMEMIT(" %u", args);
@@ -686,8 +724,6 @@ void verity_status(struct dm_target *ti, status_type_t type,
 		}
 		if (v->zero_digest)
 			DMEMIT(" " DM_VERITY_OPT_IGN_ZEROES);
-		if (v->validated_blocks)
-			DMEMIT(" " DM_VERITY_OPT_AT_MOST_ONCE);
 		sz = verity_fec_status_table(v, sz, result, maxlen);
 		break;
 	}
@@ -758,7 +794,6 @@ void verity_dtr(struct dm_target *ti)
 	if (v->bufio)
 		dm_bufio_client_destroy(v->bufio);
 
-	vfree(v->validated_blocks);
 	kfree(v->salt);
 	kfree(v->root_digest);
 	kfree(v->zero_digest);
@@ -779,26 +814,6 @@ void verity_dtr(struct dm_target *ti)
 	kfree(v);
 }
 EXPORT_SYMBOL_GPL(verity_dtr);
-
-static int verity_alloc_most_once(struct dm_verity *v)
-{
-	struct dm_target *ti = v->ti;
-
-	/* the bitset can only handle INT_MAX blocks */
-	if (v->data_blocks > INT_MAX) {
-		ti->error = "device too large to use check_at_most_once";
-		return -E2BIG;
-	}
-
-	v->validated_blocks = vzalloc(BITS_TO_LONGS(v->data_blocks) *
-				       sizeof(unsigned long));
-	if (!v->validated_blocks) {
-		ti->error = "failed to allocate bitset for check_at_most_once";
-		return -ENOMEM;
-	}
-
-	return 0;
-}
 
 static int verity_alloc_zero_digest(struct dm_verity *v)
 {
@@ -867,12 +882,6 @@ static int verity_parse_opt_args(struct dm_arg_set *as, struct dm_verity *v)
 				ti->error = "Cannot allocate zero digest";
 				return r;
 			}
-			continue;
-
-		} else if (!strcasecmp(arg_name, DM_VERITY_OPT_AT_MOST_ONCE)) {
-			r = verity_alloc_most_once(v);
-			if (r)
-				return r;
 			continue;
 
 		} else if (verity_is_fec_opt_arg(arg_name)) {
@@ -991,6 +1000,29 @@ int verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 		ti->error = "Data device is too small";
 		r = -EINVAL;
 		goto bad;
+	}
+
+	/*
+	 * Allocate the smallest amount of memory possible for the recently
+	 * verified block cache. A bitmap is used with each data block
+	 * represented as a bit. Bits are set for recently verified blocks and
+	 * all bits are cleared after an expiration period.
+	 */
+	v->verified_cache = vmalloc(BITS_TO_LONGS(v->data_blocks) *
+				    sizeof(unsigned long));
+	if (v->verified_cache) {
+		bitmap_zero(v->verified_cache, v->data_blocks);
+		setup_timer(&v->cache_timeout, cache_timeout_cb,
+			    (unsigned long)v);
+		mod_timer(&v->cache_timeout,
+			  jiffies + DM_VERITY_CACHE_CLEAR_SECS * HZ);
+	} else {
+		/*
+		 * This feature will silently cease to exist if memory for
+		 * verified_cache isn't allocated by virtue of NULL pointer
+		 * checks.
+		 */
+		DMERR("Unable to allocate memory for verified_cache");
 	}
 
 	if (sscanf(argv[6], "%llu%c", &num_ll, &dummy) != 1 ||
@@ -1145,7 +1177,7 @@ EXPORT_SYMBOL_GPL(verity_ctr);
 
 static struct target_type verity_target = {
 	.name		= "verity",
-	.version	= {1, 4, 0},
+	.version	= {1, 3, 0},
 	.module		= THIS_MODULE,
 	.ctr		= verity_ctr,
 	.dtr		= verity_dtr,

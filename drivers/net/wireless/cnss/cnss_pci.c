@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -77,6 +77,29 @@
 #define QCA6174_FW_3_0	(0x30)
 #define QCA6174_FW_3_2	(0x32)
 #define BEELINER_FW	(0x00)
+#define AR6320_REV1_VERSION             0x5000000
+#define AR6320_REV1_1_VERSION           0x5000001
+#define AR6320_REV1_3_VERSION           0x5000003
+#define AR6320_REV2_1_VERSION           0x5010000
+#define AR6320_REV3_VERSION             0x5020000
+#define AR6320_REV3_2_VERSION           0x5030000
+#define AR900B_DEV_VERSION              0x1000000
+
+static struct cnss_fw_files FW_FILES_QCA6174_FW_1_1 = {
+"qwlan11.bin", "bdwlan11.bin", "otp11.bin", "utf11.bin",
+"utfbd11.bin", "epping11.bin", "evicted11.bin"};
+static struct cnss_fw_files FW_FILES_QCA6174_FW_2_0 = {
+"qwlan20.bin", "bdwlan20.bin", "otp20.bin", "utf20.bin",
+"utfbd20.bin", "epping20.bin", "evicted20.bin"};
+static struct cnss_fw_files FW_FILES_QCA6174_FW_1_3 = {
+"qwlan13.bin", "bdwlan13.bin", "otp13.bin", "utf13.bin",
+"utfbd13.bin", "epping13.bin", "evicted13.bin"};
+static struct cnss_fw_files FW_FILES_QCA6174_FW_3_0 = {
+"qwlan30.bin", "bdwlan30.bin", "otp30.bin", "utf30.bin",
+"utfbd30.bin", "epping30.bin", "evicted30.bin"};
+static struct cnss_fw_files FW_FILES_DEFAULT = {
+"qwlan.bin", "bdwlan.bin", "otp.bin", "utf.bin",
+"utfbd.bin", "epping.bin", "evicted.bin"};
 
 #define QCA6180_VENDOR_ID	(0x168C)
 #define QCA6180_DEVICE_ID	(0x0041)
@@ -304,6 +327,11 @@ static void cnss_put_wlan_enable_gpio(void)
 	else
 		gpio_free(gpio_info->num);
 }
+
+static char *regulatory_file = "bdwlan30.bin";
+module_param(regulatory_file, charp, S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(regulatory_file,
+		"Regulatory file to be picked up based on carrier");
 
 static int cnss_wlan_vreg_on(struct cnss_wlan_vreg_info *vreg_info)
 {
@@ -1099,6 +1127,40 @@ int cnss_get_fw_files(struct cnss_fw_files *pfw_files)
 	return 0;
 }
 EXPORT_SYMBOL(cnss_get_fw_files);
+
+int cnss_get_fw_files_for_target(struct cnss_fw_files *pfw_files,
+					u32 target_type, u32 target_version)
+{
+	if (!pfw_files)
+		return -ENODEV;
+
+	pr_debug("regulatory_file name passed is %s\n", regulatory_file);
+	switch (target_version) {
+	case AR6320_REV1_VERSION:
+	case AR6320_REV1_1_VERSION:
+		memcpy(pfw_files, &FW_FILES_QCA6174_FW_1_1, sizeof(*pfw_files));
+		break;
+	case AR6320_REV1_3_VERSION:
+		memcpy(pfw_files, &FW_FILES_QCA6174_FW_1_3, sizeof(*pfw_files));
+		break;
+	case AR6320_REV2_1_VERSION:
+		memcpy(pfw_files, &FW_FILES_QCA6174_FW_2_0, sizeof(*pfw_files));
+		break;
+	case AR6320_REV3_VERSION:
+	case AR6320_REV3_2_VERSION:
+		memset(FW_FILES_QCA6174_FW_3_0.board_data, 0, CNSS_MAX_FILE_NAME);
+		strlcpy(FW_FILES_QCA6174_FW_3_0.board_data, regulatory_file, CNSS_MAX_FILE_NAME);
+		memcpy(pfw_files, &FW_FILES_QCA6174_FW_3_0, sizeof(*pfw_files));
+		break;
+	default:
+		memcpy(pfw_files, &FW_FILES_DEFAULT, sizeof(*pfw_files));
+		pr_err("%s version mismatch 0x%X 0x%X",
+				__func__, target_type, target_version);
+		break;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(cnss_get_fw_files_for_target);
 
 #ifdef CONFIG_CNSS_SECURE_FW
 static void cnss_wlan_fw_mem_alloc(struct pci_dev *pdev)
@@ -2084,7 +2146,7 @@ static void cnss_wlan_memory_expansion(void)
 {
 	struct device *dev;
 	const struct firmware *fw_entry;
-	const char *filename;
+	const char *filename = FW_FILES_QCA6174_FW_3_0.evicted_data;
 	u_int32_t fw_entry_size, size_left, dma_size_left, length;
 	char *fw_temp;
 	char *fw_data;
@@ -2094,7 +2156,6 @@ static void cnss_wlan_memory_expansion(void)
 	struct pci_dev *pdev;
 
 	mutex_lock(&penv->fw_setup_stat_lock);
-	filename = cnss_wlan_get_evicted_data_file();
 	pdev = penv->pdev;
 	dev = &pdev->dev;
 	cnss_seg_info = penv->cnss_seg_info;
@@ -2471,6 +2532,10 @@ void cnss_wlan_unregister_driver(struct cnss_wlan_driver *driver)
 		return;
 	}
 
+	if (penv->bus_client)
+		msm_bus_scale_client_update_request(penv->bus_client,
+						    CNSS_BUS_WIDTH_NONE);
+
 	if (!pdev) {
 		pr_err("%d: invalid pdev\n", __LINE__);
 		goto cut_power;
@@ -2492,7 +2557,7 @@ void cnss_wlan_unregister_driver(struct cnss_wlan_driver *driver)
 			MSM_PCIE_SUSPEND, cnss_get_pci_dev_bus_number(pdev),
 			pdev, PM_OPTIONS)) {
 			pr_err("Failed to shutdown PCIe link\n");
-			goto bus_request;
+			return;
 		}
 	} else if (penv->pcie_link_state && penv->pcie_link_down_ind) {
 		penv->saved_state = NULL;
@@ -2501,7 +2566,7 @@ void cnss_wlan_unregister_driver(struct cnss_wlan_driver *driver)
 			MSM_PCIE_SUSPEND, cnss_get_pci_dev_bus_number(pdev),
 				pdev, PM_OPTIONS_SUSPEND_LINK_DOWN)) {
 			pr_err("Failed to shutdown PCIe link (with linkdown option)\n");
-			goto bus_request;
+			return;
 		}
 	}
 	penv->pcie_link_state = PCIE_LINK_DOWN;
@@ -2515,10 +2580,6 @@ cut_power:
 	cnss_configure_wlan_en_gpio(WLAN_EN_LOW);
 	if (cnss_wlan_vreg_set(vreg_info, VREG_OFF))
 		pr_err("wlan vreg OFF failed\n");
-bus_request:
-	if (penv->bus_client)
-		msm_bus_scale_client_update_request(penv->bus_client,
-						    CNSS_BUS_WIDTH_NONE);
 }
 EXPORT_SYMBOL(cnss_wlan_unregister_driver);
 
@@ -2731,14 +2792,10 @@ err_pcie_link_up:
 	cnss_configure_wlan_en_gpio(WLAN_EN_LOW);
 	cnss_wlan_vreg_set(vreg_info, VREG_OFF);
 	if (penv->pdev) {
-		if (wdrv && wdrv->update_status)
-			wdrv->update_status(penv->pdev, CNSS_SSR_FAIL);
-		if (!penv->recovery_in_progress) {
-			pr_err("%d: Unregistering pci device\n", __LINE__);
-			pci_unregister_driver(&cnss_wlan_pci_driver);
-			penv->pdev = NULL;
-			penv->pci_register_again = true;
-		}
+		pr_err("%d: Unregistering pci device\n", __LINE__);
+		pci_unregister_driver(&cnss_wlan_pci_driver);
+		penv->pdev = NULL;
+		penv->pci_register_again = true;
 	}
 
 err_wlan_vreg_on:
@@ -3844,7 +3901,7 @@ int cnss_pcie_power_down(struct device *dev)
 	return ret;
 }
 
-module_init(cnss_initialize);
+fs_initcall(cnss_initialize);
 module_exit(cnss_exit);
 
 MODULE_LICENSE("GPL v2");
