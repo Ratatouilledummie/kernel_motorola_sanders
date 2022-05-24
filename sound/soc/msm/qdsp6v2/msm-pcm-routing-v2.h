@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,7 +17,6 @@
 #define LPASS_BE_PRI_I2S_TX "PRIMARY_I2S_TX"
 #define LPASS_BE_SLIMBUS_0_RX "SLIMBUS_0_RX"
 #define LPASS_BE_SLIMBUS_0_TX "SLIMBUS_0_TX"
-#define LPASS_BE_SLIMBUS_2_TX "SLIMBUS_2_TX"
 #define LPASS_BE_HDMI "HDMI"
 #define LPASS_BE_INT_BT_SCO_RX "INT_BT_SCO_RX"
 #define LPASS_BE_INT_BT_SCO_TX "INT_BT_SCO_TX"
@@ -158,8 +157,6 @@ enum {
 	MSM_FRONTEND_DAI_MULTIMEDIA17,
 	MSM_FRONTEND_DAI_MULTIMEDIA18,
 	MSM_FRONTEND_DAI_MULTIMEDIA19,
-	MSM_FRONTEND_DAI_MULTIMEDIA20,
-	MSM_FRONTEND_DAI_MULTIMEDIA21,
 	MSM_FRONTEND_DAI_MULTIMEDIA28,
 	MSM_FRONTEND_DAI_MULTIMEDIA29,
 	MSM_FRONTEND_DAI_CS_VOICE,
@@ -305,7 +302,6 @@ enum {
 	MSM_BACKEND_DAI_QUAT_TDM_RX_7,
 	MSM_BACKEND_DAI_QUAT_TDM_TX_7,
 	MSM_BACKEND_DAI_INT_BT_A2DP_RX,
-	MSM_BACKEND_DAI_SLIMBUS_2_TX,
 	MSM_BACKEND_DAI_AFE_LOOPBACK_TX,
 	MSM_BACKEND_DAI_MAX,
 };
@@ -414,8 +410,4 @@ void msm_pcm_routing_reg_stream_app_type_cfg(int fedai_id, int app_type,
 			int acdb_dev_id, int sample_rate, int session_type);
 int msm_pcm_routing_get_stream_app_type_cfg(int fedai_id, int session_type,
 			int *app_type, int *acdb_dev_id, int *sample_rate);
-int msm_pcm_routing_send_chmix_cfg(int fe_id, int ip_channel_cnt,
-				int op_channel_cnt, int *ch_wght_coeff,
-				int session_type, bool use_default_chmap,
-				char *channel_map);
 #endif /*_MSM_PCM_H*/
