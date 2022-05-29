@@ -358,8 +358,7 @@ static int parse_legacy_cluster_params(struct device_node *node,
 	int ret;
 	struct lpm_match {
 		char *devname;
-		int (*set_mode)(struct low_power_ops *, int,
-					struct lpm_cluster_level *);
+		int (*set_mode)(struct low_power_ops *, int, bool);
 	};
 	struct lpm_match match_tbl[] = {
 		{"l2", set_l2_mode},
@@ -592,8 +591,6 @@ static int parse_cluster_level(struct device_node *node,
 					"qcom,disable-dynamic-int-routing");
 	level->last_core_only = of_property_read_bool(node,
 					"qcom,last-core-only");
-	level->no_cache_flush = of_property_read_bool(node,
-					"qcom,no-cache-flush");
 
 	key = "parse_power_params";
 	ret = parse_power_params(node, &level->pwr);
@@ -714,7 +711,8 @@ static int calculate_residency(struct power_params *base_pwr,
 		((int32_t)(next_pwr->ss_power * next_pwr->time_overhead_us)
 		- (int32_t)(base_pwr->ss_power * base_pwr->time_overhead_us));
 
-	residency /= (int32_t)(base_pwr->ss_power  - next_pwr->ss_power);
+	if (base_pwr->ss_power != next_pwr->ss_power)
+		residency /= (int32_t)(base_pwr->ss_power  - next_pwr->ss_power);
 
 	if (residency < 0) {
 		pr_err("%s: residency < 0 for LPM\n",
