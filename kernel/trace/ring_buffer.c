@@ -194,6 +194,10 @@ void tracing_off_permanent(void)
 /* define RINGBUF_TYPE_DATA for 'case RINGBUF_TYPE_DATA:' */
 #define RINGBUF_TYPE_DATA 0 ... RINGBUF_TYPE_DATA_TYPE_LEN_MAX
 
+/* 16M, max size of buffer, GFP_REPEAT is allowed */
+#define MAX_REPEAT_BUFFER	(1 << 24)
+#define MAX_REPEAT_BUFFER_PAGE DIV_ROUND_UP(MAX_REPEAT_BUFFER, BUF_PAGE_SIZE)
+
 enum {
 	RB_LEN_TIME_EXTEND = 8,
 	RB_LEN_TIME_STAMP = 16,
@@ -336,8 +340,6 @@ EXPORT_SYMBOL_GPL(ring_buffer_event_data);
 /* Missed count stored at end */
 #define RB_MISSED_STORED	(1 << 30)
 
-#define RB_MISSED_FLAGS		(RB_MISSED_EVENTS|RB_MISSED_STORED)
-
 struct buffer_data_page {
 	u64		 time_stamp;	/* page time stamp */
 	local_t		 commit;	/* write committed index */
@@ -389,9 +391,7 @@ static void rb_init_page(struct buffer_data_page *bpage)
  */
 size_t ring_buffer_page_len(void *page)
 {
-	struct buffer_data_page *bpage = page;
-
-	return (local_read(&bpage->commit) & ~RB_MISSED_FLAGS)
+	return local_read(&((struct buffer_data_page *)page)->commit)
 		+ BUF_PAGE_HDR_SIZE;
 }
 
@@ -1170,20 +1170,31 @@ static int rb_check_pages(struct ring_buffer_per_cpu *cpu_buffer)
 	return 0;
 }
 
-static int __rb_allocate_pages(long nr_pages, struct list_head *pages, int cpu)
+static int __rb_allocate_pages(long nr_pages, struct list_head *pages, int cpu, long nr_pages_to_be)
 {
 	struct buffer_page *bpage, *tmp;
 	long i;
+	gfp_t flags = GFP_KERNEL;
+
+	/*
+	 * when total pages does not exceed limitation,
+	 * pages allocation is permitted to repeat
+	 * otherwise, GFP_NORETRY is set and retry is not allowed
+	 */
+	if (nr_pages_to_be < MAX_REPEAT_BUFFER_PAGE)
+		flags |= __GFP_REPEAT;
+	else
+		flags |= __GFP_NORETRY;
 
 	for (i = 0; i < nr_pages; i++) {
 		struct page *page;
 		/*
-		 * __GFP_NORETRY flag makes sure that the allocation fails
+		 * __GFP_REPEAT flag makes sure that the allocation fails
 		 * gracefully without invoking oom-killer and the system is
 		 * not destabilized.
 		 */
 		bpage = kzalloc_node(ALIGN(sizeof(*bpage), cache_line_size()),
-				    GFP_KERNEL | __GFP_NORETRY,
+					flags,
 				    cpu_to_node(cpu));
 		if (!bpage)
 			goto free_pages;
@@ -1191,7 +1202,7 @@ static int __rb_allocate_pages(long nr_pages, struct list_head *pages, int cpu)
 		list_add(&bpage->list, pages);
 
 		page = alloc_pages_node(cpu_to_node(cpu),
-					GFP_KERNEL | __GFP_NORETRY, 0);
+					flags, 0);
 		if (!page)
 			goto free_pages;
 		bpage->page = page_address(page);
@@ -1216,7 +1227,7 @@ static int rb_allocate_pages(struct ring_buffer_per_cpu *cpu_buffer,
 
 	WARN_ON(!nr_pages);
 
-	if (__rb_allocate_pages(nr_pages, &pages, cpu_buffer->cpu))
+	if (__rb_allocate_pages(nr_pages, &pages, cpu_buffer->cpu, nr_pages))
 		return -ENOMEM;
 
 	/*
@@ -1736,7 +1747,7 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size,
 			 */
 			INIT_LIST_HEAD(&cpu_buffer->new_pages);
 			if (__rb_allocate_pages(cpu_buffer->nr_pages_to_update,
-						&cpu_buffer->new_pages, cpu)) {
+						&cpu_buffer->new_pages, cpu, nr_pages)) {
 				/* not enough memory for new pages */
 				err = -ENOMEM;
 				goto out_err;
@@ -1792,7 +1803,7 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size,
 		INIT_LIST_HEAD(&cpu_buffer->new_pages);
 		if (cpu_buffer->nr_pages_to_update > 0 &&
 			__rb_allocate_pages(cpu_buffer->nr_pages_to_update,
-					    &cpu_buffer->new_pages, cpu_id)) {
+					    &cpu_buffer->new_pages, cpu_id, nr_pages)) {
 			err = -ENOMEM;
 			goto out_err;
 		}
@@ -3150,22 +3161,6 @@ EXPORT_SYMBOL_GPL(ring_buffer_record_on);
 int ring_buffer_record_is_on(struct ring_buffer *buffer)
 {
 	return !atomic_read(&buffer->record_disabled);
-}
-
-/**
- * ring_buffer_record_is_set_on - return true if the ring buffer is set writable
- * @buffer: The ring buffer to see if write is set enabled
- *
- * Returns true if the ring buffer is set writable by ring_buffer_record_on().
- * Note that this does NOT mean it is in a writable state.
- *
- * It may return true when the ring buffer has been disabled by
- * ring_buffer_record_disable(), as that is a temporary disabling of
- * the ring buffer.
- */
-int ring_buffer_record_is_set_on(struct ring_buffer *buffer)
-{
-	return !(atomic_read(&buffer->record_disabled) & RB_BUFFER_OFF);
 }
 
 /**

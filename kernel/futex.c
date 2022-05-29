@@ -490,7 +490,6 @@ again:
 	 * From this point on, mapping will be re-verified if necessary and
 	 * page lock will be acquired only if it is unavoidable
 	 */
-
 	mapping = READ_ONCE(page_head->mapping);
 
 	/*
@@ -516,8 +515,8 @@ again:
 		 * applies. If this is really a shmem page then the page lock
 		 * will prevent unexpected transitions.
 		 */
-		lock_page(page);
-		shmem_swizzled = PageSwapCache(page) || page->mapping;
+		lock_page(page_head);
+		shmem_swizzled = PageSwapCache(page_head) || page_head->mapping;
 		unlock_page(page_head);
 		put_page(page_head);
 
