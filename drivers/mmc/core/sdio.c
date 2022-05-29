@@ -228,8 +228,7 @@ static void sdio_enable_vendor_specific_settings(struct mmc_card *card)
 	u8 settings;
 
 	if (mmc_enable_qca6574_settings(card) ||
-		mmc_enable_qca9377_settings(card) ||
-		mmc_enable_qca9379_settings(card)) {
+		mmc_enable_qca9377_settings(card)) {
 		ret = mmc_io_rw_direct(card, 1, 0, 0xF2, 0x0F, NULL);
 		if (ret) {
 			pr_crit("%s: failed to write to fn 0xf2 %d\n",
@@ -517,9 +516,9 @@ static void sdio_select_driver_type(struct mmc_card *card)
 	 * information and let the hardware specific code
 	 * return what is possible given the options
 	 */
-	drive_strength = card->host->ops->select_drive_strength(
-		card->sw_caps.uhs_max_dtr,
-		host_drv_type, card_drv_type);
+	drive_strength = card->host->ops->select_drive_strength(card->host,
+								host_drv_type,
+								card_drv_type);
 
 	/* if error just use default for drive strength B */
 	err = mmc_io_rw_direct(card, 0, 0, SDIO_CCCR_DRIVE_STRENGTH, 0,
