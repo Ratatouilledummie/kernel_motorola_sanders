@@ -71,13 +71,14 @@ static int sdcardfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
 	int err;
 	struct path lower_path;
+#ifndef LOWER_FS_MIN_FREE_SIZE
 	u32 min_blocks;
 	struct sdcardfs_sb_info *sbi = SDCARDFS_SB(dentry->d_sb);
-
+#endif
 	sdcardfs_get_lower_path(dentry, &lower_path);
 	err = vfs_statfs(&lower_path, buf);
 	sdcardfs_put_lower_path(dentry, &lower_path);
-
+#ifndef LOWER_FS_MIN_FREE_SIZE
 	if (sbi->options.reserved_mb) {
 		/* Invalid statfs informations. */
 		if (buf->f_bsize == 0) {
@@ -96,7 +97,7 @@ static int sdcardfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 		/* Make reserved blocks invisiable to media storage */
 		buf->f_bfree = buf->f_bavail;
 	}
-
+#endif
 	/* set return buf to our f/s to avoid confusing user-level utils */
 	buf->f_type = SDCARDFS_SUPER_MAGIC;
 
@@ -144,7 +145,7 @@ static int sdcardfs_remount_fs2(struct vfsmount *mnt, struct super_block *sb,
 		pr_err("sdcardfs: remount flags 0x%x unsupported\n", *flags);
 		err = -EINVAL;
 	}
-	pr_info("Remount options were %s for vfsmnt %pK.\n", options, mnt);
+	pr_info("Remount options were %s for vfsmnt %p.\n", options, mnt);
 	err = parse_options_remount(sb, options, *flags & ~MS_SILENT, mnt->data);
 
 
@@ -215,9 +216,6 @@ static struct inode *sdcardfs_alloc_inode(struct super_block *sb)
 
 	i->data = d;
 	kref_init(&d->refcount);
-	i->top_data = d;
-	spin_lock_init(&i->top_lock);
-	kref_get(&d->refcount);
 
 	i->vfs_inode.i_version = 1;
 	return &i->vfs_inode;
@@ -307,8 +305,6 @@ static int sdcardfs_show_options(struct vfsmount *mnt, struct seq_file *m,
 		seq_printf(m, ",userid=%u", opts->fs_user_id);
 	if (opts->gid_derivation)
 		seq_puts(m, ",derive_gid");
-	if (opts->default_normal)
-		seq_puts(m, ",default_normal");
 	if (opts->reserved_mb != 0)
 		seq_printf(m, ",reserved=%uMB", opts->reserved_mb);
 
