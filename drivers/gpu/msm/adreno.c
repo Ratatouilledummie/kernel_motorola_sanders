@@ -1,4 +1,4 @@
-/* Copyright (c) 2002,2007-2018,2021, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2002,2007-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -806,18 +806,28 @@ static int adreno_of_get_pwrlevels(struct adreno_device *adreno_dev,
 		struct device_node *parent)
 {
 	struct device_node *node, *child;
-	unsigned int bin = 0;
+	unsigned int speed_bin;
+	int gpu_speed_bin_override = CONFIG_GPU_SPEED_BIN_OVERRIDE;
 
 	node = of_find_node_by_name(parent, "qcom,gpu-pwrlevel-bins");
 	if (node == NULL)
 		return adreno_of_get_legacy_pwrlevels(adreno_dev, parent);
 
+	if (gpu_speed_bin_override) {
+		speed_bin = gpu_speed_bin_override;
+		pr_info("%s: 8996-lite GPU speed bin %d. Override to %d\n",
+			__func__, adreno_dev->speed_bin,
+			gpu_speed_bin_override);
+	} else
+		speed_bin = adreno_dev->speed_bin;
+
 	for_each_child_of_node(node, child) {
+		unsigned int bin;
 
 		if (of_property_read_u32(child, "qcom,speed-bin", &bin))
 			continue;
 
-		if (bin == adreno_dev->speed_bin) {
+		if (bin == speed_bin) {
 			int ret;
 
 			ret = adreno_of_parse_pwrlevels(adreno_dev, child);
@@ -828,8 +838,6 @@ static int adreno_of_get_pwrlevels(struct adreno_device *adreno_dev,
 		}
 	}
 
-	KGSL_CORE_ERR("GPU speed_bin:%d mismatch for efused bin:%d\n",
-			adreno_dev->speed_bin, bin);
 	return -ENODEV;
 }
 
@@ -955,33 +963,6 @@ adreno_ocmem_free(struct adreno_device *adreno_dev)
 }
 #endif
 
-static bool adreno_is_gpu_disabled(struct adreno_device *adreno_dev)
-{
-	unsigned int row0;
-	unsigned int pte_row0_msb[3];
-	int ret;
-	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
-
-	if (of_property_read_u32_array(device->pdev->dev.of_node,
-		"qcom,gpu-disable-fuse", pte_row0_msb, 3))
-		return false;
-	/*
-	 * Read the fuse value to disable GPU driver if fuse
-	 * is blown. By default(fuse value is 0) GPU is enabled.
-	 */
-	if (adreno_efuse_map(adreno_dev))
-		return false;
-
-	ret = adreno_efuse_read_u32(adreno_dev, pte_row0_msb[0], &row0);
-	adreno_efuse_unmap(adreno_dev);
-
-	if (ret)
-		return false;
-
-	return (row0 >> pte_row0_msb[2]) &
-			pte_row0_msb[1] ? true : false;
-}
-
 static int adreno_probe(struct platform_device *pdev)
 {
 	struct kgsl_device *device;
@@ -997,11 +978,6 @@ static int adreno_probe(struct platform_device *pdev)
 
 	device = KGSL_DEVICE(adreno_dev);
 	device->pdev = pdev;
-
-	if (adreno_is_gpu_disabled(adreno_dev)) {
-		pr_err("adreno: GPU is disabled on this device");
-		return -ENODEV;
-	}
 
 	/* Get the chip ID from the DT and set up target specific parameters */
 	adreno_identify_gpu(adreno_dev);
@@ -1402,7 +1378,7 @@ static void _set_secvid(struct kgsl_device *device)
 		adreno_writereg64(adreno_dev,
 			ADRENO_REG_RBBM_SECVID_TSB_TRUSTED_BASE,
 			ADRENO_REG_RBBM_SECVID_TSB_TRUSTED_BASE_HI,
-			KGSL_IOMMU_SECURE_BASE(&device->mmu));
+			KGSL_IOMMU_SECURE_BASE);
 		adreno_writereg(adreno_dev,
 			ADRENO_REG_RBBM_SECVID_TSB_TRUSTED_SIZE,
 			KGSL_IOMMU_SECURE_SIZE);
@@ -1824,7 +1800,7 @@ static int adreno_getproperty(struct kgsl_device *device,
 				 * anything to mmap().
 				 */
 				shadowprop.gpuaddr =
-					(unsigned long)device->memstore.gpuaddr;
+					(unsigned int) device->memstore.gpuaddr;
 				shadowprop.size = device->memstore.size;
 				/* GSL needs this to be set, even if it
 				   appears to be meaningless */
@@ -2896,19 +2872,6 @@ static void adreno_gpu_model(struct kgsl_device *device, char *str,
 			 ADRENO_CHIPID_MAJOR(adreno_dev->chipid),
 			 ADRENO_CHIPID_MINOR(adreno_dev->chipid),
 			 ADRENO_CHIPID_PATCH(adreno_dev->chipid) + 1);
-}
-
-u32 adreno_get_ucode_version(const u32 *data)
-{
-	u32 version;
-
-	version = data[1];
-
-	if ((version & 0xf) != 0xa)
-		return version;
-
-	version &= ~0xfff;
-	return  version | ((data[3] & 0xfff000) >> 12);
 }
 
 static const struct kgsl_functable adreno_functable = {
