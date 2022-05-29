@@ -33,6 +33,10 @@
 #include <linux/sched.h>
 #include <linux/smp.h>
 
+#include <soc/qcom/bootinfo.h>
+
+void __attribute__((weak)) mach_cpuinfo_show(struct seq_file *m, void *v);
+
 /*
  * In case the boot CPU is hotpluggable, we record its initial state and
  * current state separately. Certain system registers may contain different
@@ -157,6 +161,12 @@ static int c_show(struct seq_file *m, void *v)
 		seq_printf(m, "Hardware\t: %s\n", machine_name);
 	else
 		seq_printf(m, "Hardware\t: %s\n", arch_read_hardware_id());
+	seq_printf(m, "Revision\t: %04x\n", system_rev);
+	seq_printf(m, "Serial\t\t: %08x%08x\n",
+		 system_serial_high, system_serial_low);
+
+	if (mach_cpuinfo_show)
+		mach_cpuinfo_show(m, v);
 
 	return 0;
 }
@@ -260,4 +270,16 @@ void __init cpuinfo_store_boot_cpu(void)
 
 	boot_cpu_data = *info;
 	init_cpu_features(&boot_cpu_data);
+}
+
+u64 __attribute_const__ icache_get_ccsidr(void)
+{
+	u64 ccsidr;
+
+	WARN_ON(preemptible());
+
+	/* Select L1 I-cache and read its size ID register */
+	asm("msr csselr_el1, %1; isb; mrs %0, ccsidr_el1"
+	    : "=r"(ccsidr) : "r"(1L));
+	return ccsidr;
 }

@@ -19,7 +19,6 @@
 #include <linux/uaccess.h>
 #include <linux/hardirq.h>
 #include <linux/kdebug.h>
-#include <linux/kprobes.h>
 #include <linux/module.h>
 #include <linux/kexec.h>
 #include <linux/bug.h>
@@ -136,26 +135,30 @@ static void dump_mem(const char *lvl, const char *str, unsigned long bottom,
 	set_fs(fs);
 }
 
-static void __dump_instr(const char *lvl, struct pt_regs *regs)
+static void dump_instr(const char *lvl, struct pt_regs *regs)
 {
 	unsigned long addr = instruction_pointer(regs);
 	const int thumb = thumb_mode(regs);
 	const int width = thumb ? 4 : 8;
+	mm_segment_t fs;
 	char str[sizeof("00000000 ") * 5 + 2 + 1], *p = str;
 	int i;
 
 	/*
-	 * Note that we now dump the code first, just in case the backtrace
-	 * kills us.
+	 * We need to switch to kernel mode so that we can use __get_user
+	 * to safely read from kernel space.  Note that we now dump the
+	 * code first, just in case the backtrace kills us.
 	 */
+	fs = get_fs();
+	set_fs(KERNEL_DS);
 
 	for (i = -4; i < 1 + !!thumb; i++) {
 		unsigned int val, bad;
 
 		if (thumb)
-			bad = get_user(val, &((u16 *)addr)[i]);
+			bad = __get_user(val, &((u16 *)addr)[i]);
 		else
-			bad = get_user(val, &((u32 *)addr)[i]);
+			bad = __get_user(val, &((u32 *)addr)[i]);
 
 		if (!bad)
 			p += sprintf(p, i == 0 ? "(%0*x) " : "%0*x ",
@@ -166,20 +169,8 @@ static void __dump_instr(const char *lvl, struct pt_regs *regs)
 		}
 	}
 	printk("%sCode: %s\n", lvl, str);
-}
 
-static void dump_instr(const char *lvl, struct pt_regs *regs)
-{
-	mm_segment_t fs;
-
-	if (!user_mode(regs)) {
-		fs = get_fs();
-		set_fs(KERNEL_DS);
-		__dump_instr(lvl, regs);
-		set_fs(fs);
-	} else {
-		__dump_instr(lvl, regs);
-	}
+	set_fs(fs);
 }
 
 #ifdef CONFIG_ARM_UNWIND
@@ -399,8 +390,7 @@ void unregister_undef_hook(struct undef_hook *hook)
 	raw_spin_unlock_irqrestore(&undef_lock, flags);
 }
 
-static nokprobe_inline
-int call_undef_hook(struct pt_regs *regs, unsigned int instr)
+static int call_undef_hook(struct pt_regs *regs, unsigned int instr)
 {
 	struct undef_hook *hook;
 	unsigned long flags;
@@ -475,7 +465,6 @@ die_sig:
 
 	arm_notify_die("Oops - undefined instruction", regs, &info, 0, 6);
 }
-NOKPROBE_SYMBOL(do_undefinstr)
 
 /*
  * Handle FIQ similarly to NMI on x86 systems.
@@ -810,6 +799,51 @@ void __bad_xchg(volatile void *ptr, int size)
 	BUG();
 }
 EXPORT_SYMBOL(__bad_xchg);
+
+#ifdef CONFIG_ARM_ARCH_TIMER
+static int read_cntfrq_trap(struct pt_regs *regs, unsigned int instr)
+{
+	int reg = (instr >> 12) & 15;
+	if (reg == 15)
+		return 1;
+	regs->uregs[reg] = arch_timer_get_rate();
+	regs->ARM_pc += 4;
+	return 0;
+}
+
+static struct undef_hook cntfrq_hook = {
+	.instr_mask     = 0x0fff0fff,
+	.instr_val      = 0x0e1e0f10,
+	.fn             = read_cntfrq_trap,
+};
+
+static int read_cntvct_trap(struct pt_regs *regs, unsigned int instr)
+{
+	int rt  = (instr >> 12) & 15;
+	int rt2 = (instr >> 16) & 15;
+	u64 val = arch_counter_get_cntvct_cp15();
+
+	regs->uregs[rt]  = lower_32_bits(val);
+	regs->uregs[rt2] = upper_32_bits(val);
+	regs->ARM_pc += 4;
+	return 0;
+}
+
+static struct undef_hook cntvct_hook = {
+	.instr_mask     = 0x0ff00fff,
+	.instr_val      = 0x0c500f1e,
+	.fn             = read_cntvct_trap,
+};
+
+static int __init arch_timer_hook_init(void)
+{
+	register_undef_hook(&cntvct_hook);
+	register_undef_hook(&cntfrq_hook);
+	return 0;
+}
+
+late_initcall(arch_timer_hook_init);
+#endif
 
 /*
  * A data abort trap was taken, but we did not handle the instruction.
