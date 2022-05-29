@@ -50,7 +50,10 @@
 #define MSM_CAMERA_SUBDEV_FLASH        16
 #define MSM_CAMERA_SUBDEV_IR_LED       17
 #define MSM_CAMERA_SUBDEV_IR_CUT       18
-#define MSM_CAMERA_SUBDEV_EXT          19
+#define MSM_CAMERA_SUBDEV_TOF          19
+#define MSM_CAMERA_SUBDEV_EXT          20
+
+#define MSM_CAMERA_SUBDEV_CCI_INTF     20
 
 #define MSM_MAX_CAMERA_SENSORS  5
 
@@ -217,7 +220,7 @@ struct msm_camera_private_ioctl_arg {
 	__u32 size;
 	__u32 result;
 	__u32 reserved;
-	__u64 ioctl_ptr;
+	__user __u64 ioctl_ptr;
 };
 
 #define VIDIOC_MSM_CAMERA_PRIVATE_IOCTL_CMD \

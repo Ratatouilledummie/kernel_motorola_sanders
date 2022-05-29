@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -102,14 +102,11 @@ struct cnss_platform_cap {
 	u32 cap_flag;
 };
 
-/* WLAN driver status, keep it aligned with cnss2 */
+/* WLAN driver status */
 enum cnss_driver_status {
 	CNSS_UNINITIALIZED,
 	CNSS_INITIALIZED,
-	CNSS_LOAD_UNLOAD,
-	CNSS_RECOVERY,
-	CNSS_FW_DOWN,
-	CNSS_SSR_FAIL,
+	CNSS_LOAD_UNLOAD
 };
 
 enum cnss_runtime_request {
@@ -133,8 +130,6 @@ extern void cnss_wlan_unregister_driver(struct cnss_wlan_driver *driver);
 extern int cnss_get_fw_files(struct cnss_fw_files *pfw_files);
 extern int cnss_get_fw_files_for_target(struct cnss_fw_files *pfw_files,
 					u32 target_type, u32 target_version);
-extern void cnss_get_qca9377_fw_files(struct cnss_fw_files *pfw_files,
-					u32 size, u32 tufello_dual_fw);
 
 extern int cnss_request_bus_bandwidth(int bandwidth);
 
