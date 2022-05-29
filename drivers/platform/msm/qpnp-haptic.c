@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,6 +26,12 @@
 #include <linux/qpnp/qpnp-revid.h>
 #include <linux/qpnp/qpnp-haptic.h>
 #include "../../staging/android/timed_output.h"
+#ifdef CONFIG_QPNP_MOT_CONTEXT_HAPTIC
+#include <linux/motosh_context.h>
+#endif
+#include <soc/qcom/bootinfo.h>
+
+#define FACTORY_MODE_STR "mot-factory"
 
 #define QPNP_IRQ_FLAGS	(IRQF_TRIGGER_RISING | \
 			IRQF_TRIGGER_FALLING | \
@@ -88,6 +94,7 @@
 #define QPNP_HAP_VMAX_SHIFT		1
 #define QPNP_HAP_VMAX_MIN_MV		116
 #define QPNP_HAP_VMAX_MAX_MV		3596
+#define QPNP_HAP_VMAX_LOW_DEFAULT	1160
 #define QPNP_HAP_ILIM_MASK		0xFE
 #define QPNP_HAP_ILIM_MIN_MV		400
 #define QPNP_HAP_ILIM_MAX_MV		800
@@ -357,6 +364,7 @@ struct qpnp_hap {
 	u32 timeout_ms;
 	u32 time_required_to_generate_back_emf_us;
 	u32 vmax_mv;
+	u32 vmax_low_mv;
 	u32 ilim_ma;
 	u32 sc_deb_cycles;
 	u32 int_pwm_freq_khz;
@@ -393,6 +401,8 @@ struct qpnp_hap {
 	bool correct_lra_drive_freq;
 	bool misc_trim_error_rc19p2_clk_reg_present;
 	bool perform_lra_auto_resonance_search;
+	uint8_t low_vmax;
+	bool context_haptics;
 };
 
 static struct qpnp_hap *ghap;
@@ -802,6 +812,52 @@ static int qpnp_hap_vmax_config(struct qpnp_hap *hap)
 
 	return 0;
 }
+
+#ifdef CONFIG_QPNP_MOT_CONTEXT_HAPTIC
+/* configuration api for lower max volatge used for table top*/
+static int qpnp_hap_vmax_low_config(struct qpnp_hap *hap)
+{
+	u8 reg = 0;
+	int rc, temp;
+
+	if (hap->vmax_low_mv < QPNP_HAP_VMAX_MIN_MV)
+		hap->vmax_low_mv = QPNP_HAP_VMAX_MIN_MV;
+	else if (hap->vmax_low_mv > QPNP_HAP_VMAX_MAX_MV)
+		hap->vmax_low_mv = QPNP_HAP_VMAX_MAX_MV;
+
+	rc = qpnp_hap_read_reg(hap, &reg, QPNP_HAP_VMAX_REG(hap->base));
+	if (rc < 0)
+		return rc;
+	reg &= QPNP_HAP_VMAX_MASK;
+	temp = hap->vmax_low_mv / QPNP_HAP_VMAX_MIN_MV;
+	reg |= (temp << QPNP_HAP_VMAX_SHIFT);
+	rc = qpnp_hap_write_reg(hap, &reg, QPNP_HAP_VMAX_REG(hap->base));
+	if (rc)
+		return rc;
+
+	return 0;
+}
+
+
+/* Switch Vmax voltage using table top detection API from SH */
+static void qpnp_hap_context(struct qpnp_hap *hap, int value)
+{
+	uint8_t t_top;
+
+	t_top = motosh_tabletop_mode_hold(value);
+	if (t_top && value > 100) {
+		if (!hap->low_vmax) {
+			pr_info("%s: table top, long -> low vmax\n", __func__);
+			qpnp_hap_vmax_low_config(hap);
+			hap->low_vmax = 1;
+		}
+	} else if (hap->low_vmax) {
+		pr_info("%s: restore vmax to default\n", __func__);
+		qpnp_hap_vmax_config(hap);
+		hap->low_vmax = 0;
+	}
+}
+#endif
 
 /* configuration api for short circuit debounce */
 static int qpnp_hap_sc_deb_config(struct qpnp_hap *hap)
@@ -1681,6 +1737,7 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int value)
 					 timed_dev);
 
 	mutex_lock(&hap->lock);
+	pr_debug("%s: duration is %d\n", __func__, value);
 
 	if (hap->act_type == QPNP_HAP_LRA &&
 				hap->correct_lra_drive_freq &&
@@ -1699,6 +1756,12 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int value)
 		value = (value > hap->timeout_ms ?
 				 hap->timeout_ms : value);
 		hap->state = 1;
+
+#ifdef CONFIG_QPNP_MOT_CONTEXT_HAPTIC
+		if (hap->context_haptics)
+			qpnp_hap_context(hap, value);
+#endif
+
 		hrtimer_start(&hap->hap_timer,
 			      ktime_set(value / 1000, (value % 1000) * 1000000),
 			      HRTIMER_MODE_REL);
@@ -2390,6 +2453,22 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 		return rc;
 	}
 
+	if (strncmp(bi_bootmode(), FACTORY_MODE_STR, BOOTMODE_MAX_LEN)) {
+
+		hap->context_haptics = of_property_read_bool(spmi->dev.of_node,
+						"qcom,context-haptics");
+
+		if (hap->context_haptics) {
+			hap->vmax_low_mv = QPNP_HAP_VMAX_LOW_DEFAULT;
+			rc = of_property_read_u32(spmi->dev.of_node,
+				"qcom,vmax-low-mv", &temp);
+			if (!rc)
+				hap->vmax_low_mv = temp;
+			else
+				dev_info(&spmi->dev, "default vmax low\n");
+		}
+	}
+
 	hap->ilim_ma = QPNP_HAP_ILIM_MIN_MV;
 	rc = of_property_read_u32(spmi->dev.of_node,
 			"qcom,ilim-ma", &temp);
@@ -2651,16 +2730,6 @@ static int qpnp_haptic_remove(struct spmi_device *spmi)
 	return 0;
 }
 
-static void qpnp_haptic_shutdown(struct spmi_device *spmi)
-{
-	struct qpnp_hap *hap = dev_get_drvdata(&spmi->dev);
-
-	cancel_work_sync(&hap->work);
-
-	/* disable haptics */
-	qpnp_hap_mod_enable(hap, false);
-}
-
 static struct of_device_id spmi_match_table[] = {
 	{ .compatible = "qcom,qpnp-haptic", },
 	{ },
@@ -2674,7 +2743,6 @@ static struct spmi_driver qpnp_haptic_driver = {
 	},
 	.probe		= qpnp_haptic_probe,
 	.remove		= qpnp_haptic_remove,
-	.shutdown	= qpnp_haptic_shutdown,
 };
 
 static int __init qpnp_haptic_init(void)
