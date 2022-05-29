@@ -789,11 +789,8 @@ int msm_camera_get_dt_gpio_set_tbl(struct device_node *of_node,
 	uint32_t count = 0;
 	uint32_t *val_array = NULL;
 
-	rc = of_property_read_u32(of_node, "qcom,gpio-set-tbl-num", &count);
-	if (rc < 0) {
-		pr_err("%s failed %d\n", __func__, __LINE__);
+	if (!of_get_property(of_node, "qcom,gpio-set-tbl-num", &count))
 		return 0;
-	}
 
 	count /= sizeof(uint32_t);
 	if (!count) {
@@ -1607,14 +1604,6 @@ int msm_camera_power_up(struct msm_camera_power_ctrl_t *ctrl,
 					__func__, __LINE__,
 					power_setting->seq_val, ctrl->num_vreg);
 
-			rc = msm_cam_sensor_handle_reg_gpio(
-				power_setting->seq_val,
-				ctrl->gpio_conf, 1);
-			if (rc < 0) {
-				pr_err("ERR:%s Error in handling VREG GPIO\n",
-					__func__);
-				goto power_up_failed;
-			}
 			break;
 		case SENSOR_I2C_MUX:
 			if (ctrl->i2c_conf && ctrl->i2c_conf->use_i2c_mux)
