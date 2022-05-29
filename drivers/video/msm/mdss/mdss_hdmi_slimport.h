@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,13 +8,20 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
  */
 
-#ifndef __MDSS_SPI_CLINET_H__
-#define __MDSS_SPI_CLINET_H__
+#ifndef __MDSS_HDMI_SLIMPORT_H__
+#define __MDSS_HDMI_SLIMPORT_H__
 
-int mdss_spi_tx_command(const void *buf);
-int mdss_spi_tx_parameter(const void *buf, size_t len);
-int mdss_spi_tx_pixel(const void *buf, size_t len);
-int mdss_spi_read_data(u8 reg_addr, u8 *data, u8 len);
-#endif /* End of __MDSS_SPI_CLINET_H__ */
+#include <linux/platform_device.h>
+
+struct msm_hdmi_slimport_ops {
+	int (*set_upstream_hpd)(struct platform_device *pdev, uint8_t on);
+
+};
+
+int msm_hdmi_register_slimport(struct platform_device *pdev,
+			  struct msm_hdmi_slimport_ops *ops, void *data);
+
+#endif /* __MDSS_HDMI_SLIMPORT_H__ */
